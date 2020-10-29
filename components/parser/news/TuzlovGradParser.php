@@ -88,27 +88,4 @@ class TuzlovGradParser extends AbstractBaseParser
         return $this->factoryNewsPost($previewNewsItem, $newsPostItemDTOList);
     }
 
-//    protected function getImageLinkFromNode(DOMElement $node): string
-//    {
-//        if ($node->hasAttribute('srcset')) {
-//            $srcset = $node->getAttribute('srcset');
-//            $parts = explode(', ', $srcset);
-//            $maxSize = null;
-//            $maxSizeSrc = null;
-//            foreach ($parts as $srcString) {
-//                $delimiterPosition = mb_strrpos($srcString, ' ');
-//                $size = (int)mb_substr($srcString, $delimiterPosition);
-//                if ($maxSize < $size) {
-//                    $maxSize = $size;
-//                    $maxSizeSrc = mb_substr($srcString, 0, $delimiterPosition);
-//                }
-//            }
-//
-//            if ($maxSizeSrc !== '' && $maxSizeSrc !== null) {
-//                return $maxSizeSrc;
-//            }
-//        }
-//
-//        return $node->getAttribute('src');
-//    }
 }
