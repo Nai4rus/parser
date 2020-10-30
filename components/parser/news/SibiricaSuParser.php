@@ -83,6 +83,7 @@ class SibiricaSuParser extends AbstractBaseParser
         $newsPageCrawler = new Crawler($newsPage);
 
         $contentCrawler = $newsPageCrawler->filterXPath('//section[@itemprop="articleBody"]');
+        $this->removeDomNodes($contentCrawler, '//*[contains(@class,"pagination")]');
 
         $image = null;
 
