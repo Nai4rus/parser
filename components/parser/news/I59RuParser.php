@@ -73,7 +73,7 @@ class I59RuParser extends AbstractBaseParser
         $newsPage = $this->getPageContent($uri);
 
         $newsPageCrawler = new Crawler($newsPage);
-        $contentCrawler = $newsPageCrawler->filterXPath('//article[@itemprop="articleBody"]');
+        $contentCrawler = $newsPageCrawler->filterXPath('//article[@itemprop="articleBody"] | //*[contains(concat(" ",normalize-space(@class)," ")," fotorama ")]');
 
         if (!$previewNewsDTO->getImage()) {
             $image = null;
