@@ -16,12 +16,14 @@ use SplObjectStorage;
 use Symfony\Component\DomCrawler\Crawler;
 use Symfony\Component\DomCrawler\UriResolver;
 use Throwable;
+use yii\web\NotFoundHttpException;
 
 abstract class AbstractBaseParser implements ParserInterface
 {
     private int $microsecondsDelay;
     private int $pageCountBetweenDelay;
     private SplObjectStorage $nodeStorage;
+    private SplObjectStorage $rootContentNodeStorage;
     private Curl $curl;
 
     public function __construct(int $microsecondsDelay = 200000, int $pageCountBetweenDelay = 10)
@@ -29,7 +31,7 @@ abstract class AbstractBaseParser implements ParserInterface
         $this->microsecondsDelay = $microsecondsDelay;
         $this->pageCountBetweenDelay = $pageCountBetweenDelay;
         $this->nodeStorage = new SplObjectStorage();
-
+        $this->rootContentNodeStorage = new SplObjectStorage();
         $this->curl = $this->factoryCurl();
     }
 
@@ -48,17 +50,22 @@ abstract class AbstractBaseParser implements ParserInterface
 
         /** @var PreviewNewsDTO $newsPostDTO */
         foreach ($previewList as $key => $newsPostDTO) {
-            $newsList[] = $this->parseNewsPage($newsPostDTO);
-            $this->nodeStorage->removeAll($this->nodeStorage);
+            try {
+                $newsList[] = $this->parseNewsPage($newsPostDTO);
+            } catch (NotFoundHttpException $exception) {
+                continue;
+            }
+            $this->getNodeStorage()->removeAll($this->getNodeStorage());
 
-            if ($key % $this->pageCountBetweenDelay === 0) {
-                usleep($this->microsecondsDelay);
+            if ($key % $this->getPageCountBetweenDelay() === 0) {
+                usleep($this->getMicrosecondsDelay());
             }
         }
 
-        $this->curl->reset();
+        $this->getCurl()->reset();
         return $newsList;
     }
+
 
     /**
      * @return string
@@ -89,6 +96,7 @@ abstract class AbstractBaseParser implements ParserInterface
     protected function parseNewsPostContent(Crawler $contentCrawler, PreviewNewsDTO $newsPostDTO): array
     {
         $newsPostItemDTOList = [];
+        $this->setRootNodes($contentCrawler);
 
         foreach ($contentCrawler as $item) {
             $nodeIterator = new DOMNodeRecursiveIterator($item->childNodes);
@@ -112,7 +120,11 @@ abstract class AbstractBaseParser implements ParserInterface
      * @param int $descLength
      * @return NewsPost
      */
-    protected function factoryNewsPost(PreviewNewsDTO $newsPostDTO, array $newsPostItems, int $descLength = 200): NewsPost {
+    protected function factoryNewsPost(
+        PreviewNewsDTO $newsPostDTO,
+        array $newsPostItems,
+        int $descLength = 200
+    ): NewsPost {
         $uri = $newsPostDTO->getUri();
         $image = $newsPostDTO->getImage();
 
@@ -253,7 +265,13 @@ abstract class AbstractBaseParser implements ParserInterface
     {
         if ($node->nodeName === '#text' || !$this->isQuoteType($node)) {
             $parentNode = $this->getRecursivelyParentNode($node, function (DOMNode $parentNode) {
-                return $this->isQuoteType($parentNode);
+                $isQuote = $this->isQuoteType($parentNode);
+
+                if ($this->getRootContentNodeStorage()->contains($parentNode) && !$isQuote) {
+                    return null;
+                }
+
+                return $isQuote;
             });
             $node = $parentNode ?: $node;
         }
@@ -262,13 +280,13 @@ abstract class AbstractBaseParser implements ParserInterface
             return null;
         }
 
-        if ($this->nodeStorage->contains($node)) {
+        if ($this->getNodeStorage()->contains($node)) {
             throw new RuntimeException('Тег уже сохранен');
         }
 
         $newsPostItem = NewsPostItemDTO::createQuoteItem($this->normalizeText($node->textContent));
 
-        $this->nodeStorage->attach($node, $newsPostItem);
+        $this->getNodeStorage()->attach($node, $newsPostItem);
         $this->removeParentsFromStorage($node->parentNode);
 
         return $newsPostItem;
@@ -278,7 +296,13 @@ abstract class AbstractBaseParser implements ParserInterface
     {
         if ($node->nodeName === '#text' || $this->getHeadingLevel($node) === null) {
             $parentNode = $this->getRecursivelyParentNode($node, function (DOMNode $parentNode) {
-                return $this->getHeadingLevel($parentNode);
+                $isHeading = $this->getHeadingLevel($parentNode) !== null;
+
+                if ($this->getRootContentNodeStorage()->contains($parentNode) && !$isHeading) {
+                    return null;
+                }
+
+                return $isHeading;
             });
             $node = $parentNode ?: $node;
         }
@@ -289,13 +313,13 @@ abstract class AbstractBaseParser implements ParserInterface
             return null;
         }
 
-        if ($this->nodeStorage->contains($node)) {
+        if ($this->getNodeStorage()->contains($node)) {
             throw new RuntimeException('Тег уже сохранен');
         }
 
         $newsPostItem = NewsPostItemDTO::createHeaderItem($this->normalizeText($node->textContent), $headingLevel);
 
-        $this->nodeStorage->attach($node, $newsPostItem);
+        $this->getNodeStorage()->attach($node, $newsPostItem);
         $this->removeParentsFromStorage($node->parentNode);
 
         return $newsPostItem;
@@ -309,7 +333,13 @@ abstract class AbstractBaseParser implements ParserInterface
 
         if ($node->nodeName === '#text' || !$this->isLink($node)) {
             $parentNode = $this->getRecursivelyParentNode($node, function (DOMNode $parentNode) {
-                return $this->isLink($parentNode);
+                $isLink = $this->isLink($parentNode);
+
+                if ($this->getRootContentNodeStorage()->contains($parentNode) && !$isLink) {
+                    return null;
+                }
+
+                return $isLink;
             });
             $node = $parentNode ?: $node;
         }
@@ -324,7 +354,7 @@ abstract class AbstractBaseParser implements ParserInterface
             return null;
         }
 
-        if ($this->nodeStorage->contains($node)) {
+        if ($this->getNodeStorage()->contains($node)) {
             throw new RuntimeException('Тег уже сохранен');
         }
 
@@ -336,7 +366,7 @@ abstract class AbstractBaseParser implements ParserInterface
 
         $newsPostItem = NewsPostItemDTO::createLinkItem($link, $linkText);
 
-        $this->nodeStorage->attach($node, $newsPostItem);
+        $this->getNodeStorage()->attach($node, $newsPostItem);
         $this->removeParentsFromStorage($node->parentNode);
 
         return $newsPostItem;
@@ -346,7 +376,13 @@ abstract class AbstractBaseParser implements ParserInterface
     {
         if ($node->nodeName === '#text' || $node->nodeName !== 'iframe') {
             $parentNode = $this->getRecursivelyParentNode($node, function (DOMNode $parentNode) {
-                return $parentNode->nodeName === 'iframe';
+                $isIframe = $parentNode->nodeName === 'iframe';
+
+                if ($this->getRootContentNodeStorage()->contains($parentNode) && !$isIframe) {
+                    return null;
+                }
+
+                return $isIframe;
             }, 3);
             $node = $parentNode ?: $node;
         }
@@ -355,7 +391,7 @@ abstract class AbstractBaseParser implements ParserInterface
             return null;
         }
 
-        if ($this->nodeStorage->contains($node)) {
+        if ($this->getNodeStorage()->contains($node)) {
             throw new RuntimeException('Тег уже сохранен');
         }
 
@@ -364,7 +400,7 @@ abstract class AbstractBaseParser implements ParserInterface
             return null;
         }
         $newsPostItem = NewsPostItemDTO::createVideoItem($youtubeVideoId);
-        $this->nodeStorage->attach($node, $newsPostItem);
+        $this->getNodeStorage()->attach($node, $newsPostItem);
 
         return $newsPostItem;
     }
@@ -377,10 +413,10 @@ abstract class AbstractBaseParser implements ParserInterface
             return null;
         }
 
-        $imageLink = $node->getAttribute('src');
+        $imageLink = $this->getImageLinkFromNode($node);
 
         if ($isPicture) {
-            if ($this->nodeStorage->contains($node->parentNode)) {
+            if ($this->getNodeStorage()->contains($node->parentNode)) {
                 throw new RuntimeException('Тег уже сохранен');
             }
 
@@ -407,7 +443,7 @@ abstract class AbstractBaseParser implements ParserInterface
         $newsPostItem = NewsPostItemDTO::createImageItem($imageLink, $alt);
 
         if ($isPicture) {
-            $this->nodeStorage->attach($node->parentNode, $newsPostItem);
+            $this->getNodeStorage()->attach($node->parentNode, $newsPostItem);
         }
 
         return $newsPostItem;
@@ -423,10 +459,17 @@ abstract class AbstractBaseParser implements ParserInterface
         $attachNode = $node;
         if ($node->nodeName === '#text') {
             $parentNode = $this->getRecursivelyParentNode($node, function (DOMNode $parentNode) {
+                $isFormattingTag = $this->isFormattingTag($parentNode);
+
+                if ($this->getRootContentNodeStorage()->contains($parentNode)) {
+                    return null;
+                }
+
                 if ($parentNode->parentNode && $this->isFormattingTag($parentNode->parentNode)) {
                     return false;
                 }
-                return $this->isFormattingTag($parentNode);
+
+                return $isFormattingTag;
             }, 6);
 
             $attachNode = $parentNode ?: $node->parentNode;
@@ -436,9 +479,9 @@ abstract class AbstractBaseParser implements ParserInterface
             $attachNode = $attachNode->parentNode;
         }
 
-        if ($this->nodeStorage->contains($attachNode)) {
+        if ($this->getNodeStorage()->contains($attachNode)) {
             /** @var NewsPostItemDTO $parentNewsPostItem */
-            $parentNewsPostItem = $this->nodeStorage->offsetGet($attachNode);
+            $parentNewsPostItem = $this->getNodeStorage()->offsetGet($attachNode);
             $parentNewsPostItem->addText($this->normalizeText($node->textContent));
 
             throw new RuntimeException('Контент добавлен к существующему объекту NewsPostItemDTO');
@@ -450,7 +493,7 @@ abstract class AbstractBaseParser implements ParserInterface
 
         $newsPostItem = NewsPostItemDTO::createTextItem($this->normalizeText($node->textContent));
 
-        $this->nodeStorage->attach($attachNode, $newsPostItem);
+        $this->getNodeStorage()->attach($attachNode, $newsPostItem);
 
         return $newsPostItem;
     }
@@ -469,15 +512,15 @@ abstract class AbstractBaseParser implements ParserInterface
             $exceptNewsPostItemTypes = [NewsPostItem::TYPE_HEADER, NewsPostItem::TYPE_QUOTE, NewsPostItem::TYPE_LINK];
         }
 
-        if ($this->nodeStorage->contains($node)) {
+        if ($this->getNodeStorage()->contains($node)) {
             /** @var NewsPostItemDTO $newsPostItem */
-            $newsPostItem = $this->nodeStorage->offsetGet($node);
+            $newsPostItem = $this->getNodeStorage()->offsetGet($node);
 
             if (in_array($newsPostItem->getType(), $exceptNewsPostItemTypes, true)) {
                 return;
             }
 
-            $this->nodeStorage->detach($node);
+            $this->getNodeStorage()->detach($node);
             return;
         }
 
@@ -488,11 +531,13 @@ abstract class AbstractBaseParser implements ParserInterface
 
     protected function getRecursivelyParentNode(DOMNode $node, callable $callback, int $maxLevel = 5): ?DOMNode
     {
-        if ($callback($node)) {
+        $result = $callback($node);
+
+        if ($result === true) {
             return $node;
         }
 
-        if ($maxLevel <= 0 || !$node->parentNode) {
+        if ($maxLevel <= 0 || !$node->parentNode || $result === null) {
             return null;
         }
 
@@ -504,8 +549,8 @@ abstract class AbstractBaseParser implements ParserInterface
     protected function getJsonContent(string $uri): array
     {
         $encodedUri = Helper::encodeUrl($uri);
-        $result = $this->curl->get($encodedUri, false);
-        $this->checkResponseCode($this->curl);
+        $result = $this->getCurl()->get($encodedUri, false);
+        $this->checkResponseCode($this->getCurl());
 
         return $result;
     }
@@ -514,8 +559,8 @@ abstract class AbstractBaseParser implements ParserInterface
     protected function getPageContent(string $uri): string
     {
         $encodedUri = Helper::encodeUrl($uri);
-        $content = $this->curl->get($encodedUri);
-        $this->checkResponseCode($this->curl);
+        $content = $this->getCurl()->get($encodedUri);
+        $this->checkResponseCode($this->getCurl());
 
         return $this->decodeGZip($content);
     }
@@ -536,6 +581,10 @@ abstract class AbstractBaseParser implements ParserInterface
 
         $httpCode = $responseInfo['http_code'] ?? null;
         $uri = $responseInfo['url'] ?? null;
+
+        if ($httpCode === 404) {
+            throw new NotFoundHttpException("Страница {$uri} не найдена");
+        }
 
         if ($httpCode < 200 || $httpCode >= 400) {
             throw new RuntimeException("Не удалось скачать страницу {$uri}, код ответа {$httpCode}");
@@ -619,6 +668,14 @@ abstract class AbstractBaseParser implements ParserInterface
         return $headingTags[$node->nodeName] ?? null;
     }
 
+    protected function setRootNodes(Crawler $contentCrawler): void
+    {
+        $this->getRootContentNodeStorage()->removeAll($this->getRootContentNodeStorage());
+        foreach ($contentCrawler as $rootNode) {
+            $this->getRootContentNodeStorage()->attach($rootNode);
+        }
+    }
+
     protected function removeDomNodes(Crawler $crawler, string $xpath): void
     {
         $crawler->filterXPath($xpath)->each(function (Crawler $crawler) {
@@ -695,4 +752,15 @@ abstract class AbstractBaseParser implements ParserInterface
     {
         return $this->pageCountBetweenDelay;
     }
+
+    protected function getRootContentNodeStorage(): SplObjectStorage
+    {
+        return $this->rootContentNodeStorage;
+    }
+
+    protected function getImageLinkFromNode(DOMElement $node): string
+    {
+        return $node->getAttribute('src');
+    }
+
 }
