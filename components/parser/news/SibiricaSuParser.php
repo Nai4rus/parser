@@ -110,7 +110,7 @@ class SibiricaSuParser extends AbstractBaseParser
 
         /** @var NewsPostItem $item */
         foreach ($newsPost->items as $key => $item) {
-            if (str_contains($item->text ?: '', 'var player1 = new Clappr.Player')) {
+            if (str_contains($item->text ?: '', 'var player1 = new Clappr.Player') || str_contains($item->text ?: '', 'rel="nofollow"')) {
                 unset($newsPost->items[$key]);
             }
         }
