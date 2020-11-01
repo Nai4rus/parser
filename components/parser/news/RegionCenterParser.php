@@ -2,56 +2,82 @@
 
 namespace app\components\parser\news;
 
+use app\components\Helper;
 use app\components\helper\nai4rus\AbstractBaseParser;
 use app\components\helper\nai4rus\PreviewNewsDTO;
 use app\components\parser\NewsPost;
 use DateTimeImmutable;
 use DateTimeZone;
+use linslin\yii2\curl\Curl;
 use RuntimeException;
 use Symfony\Component\DomCrawler\Crawler;
 use Symfony\Component\DomCrawler\UriResolver;
 use Throwable;
 
-class PrometheusRuParser extends AbstractBaseParser
+class RegionCenterParser extends AbstractBaseParser
 {
     public const USER_ID = 2;
     public const FEED_ID = 2;
 
     protected function getSiteUrl(): string
     {
-        return 'https://prometheus.ru/';
+        return 'https://region.center/';
+    }
+
+    protected function factoryCurl(): Curl
+    {
+        $curl = Helper::getCurl();
+        $curl->setOption(CURLOPT_ENCODING, "gzip");
+        $curl->setOption(CURLOPT_SSL_VERIFYPEER, false);
+        $curl->setOption(CURLOPT_SSL_VERIFYHOST, false);
+
+        return $curl;
     }
 
     protected function getPreviewNewsDTOList(int $minNewsCount = 10, int $maxNewsCount = 100): array
     {
-        $previewList = [];
-        $uriPreviewPage = UriResolver::resolve('/feed', $this->getSiteUrl());
+        $previewNewsDTOList = [];
+
+        $uriPreviewPage = UriResolver::resolve('/feed/all', $this->getSiteUrl());
 
         try {
             $previewNewsContent = $this->getPageContent($uriPreviewPage);
             $previewNewsCrawler = new Crawler($previewNewsContent);
         } catch (Throwable $exception) {
-            if (count($previewList) < $minNewsCount) {
+            if (count($previewNewsDTOList) < $minNewsCount) {
                 throw new RuntimeException('Не удалось получить достаточное кол-во новостей', null, $exception);
             }
         }
 
         $previewNewsCrawler = $previewNewsCrawler->filterXPath('//item');
 
-        $previewNewsCrawler->each(function (Crawler $newsPreview) use (&$previewList) {
+        $previewNewsCrawler->each(function (Crawler $newsPreview) use (&$previewNewsDTOList, $maxNewsCount) {
+            if (count($previewNewsDTOList) >= $maxNewsCount) {
+                return;
+            }
+
             $title = $newsPreview->filterXPath('//title')->text();
             $uri = $newsPreview->filterXPath('//link')->text();
 
             $publishedAtString = $newsPreview->filterXPath('//pubDate')->text();
             $publishedAt = DateTimeImmutable::createFromFormat(DATE_RFC1123, $publishedAtString);
+            if (!$publishedAt) {
+                $publishedAt = DateTimeImmutable::createFromFormat('D, d M Y H:i:s.u O', $publishedAtString);
+            }
             $publishedAtUTC = $publishedAt->setTimezone(new DateTimeZone('UTC'));
 
-            $previewList[] = new PreviewNewsDTO($uri, $publishedAtUTC, $title);
+            $image = null;
+            $imageCrawler = $newsPreview->filterXPath('//enclosure');
+            if ($this->crawlerHasNodes($imageCrawler)) {
+                $image = $imageCrawler->attr('url') ?: null;
+            }
+
+            $previewNewsDTOList[] = new PreviewNewsDTO($uri, $publishedAtUTC, $title, null, $image);
         });
 
-        $previewList = array_slice($previewList, 0, $maxNewsCount);
+        $previewNewsDTOList = array_slice($previewNewsDTOList, 0, $maxNewsCount);
 
-        return $previewList;
+        return $previewNewsDTOList;
     }
 
     protected function parseNewsPage(PreviewNewsDTO $previewNewsDTO): NewsPost
@@ -63,28 +89,21 @@ class PrometheusRuParser extends AbstractBaseParser
 
         $newsPageCrawler = new Crawler($newsPage);
 
+        $contentCrawler = $newsPageCrawler->filter('.post-detail');
+
         $image = null;
 
-        $mainImageCrawler = $newsPageCrawler->filterXPath('//div[contains(@id,"post-media")]/img');
+        $mainImageCrawler = $contentCrawler->filterXPath('//div[contains(@class,"post-media")]//img[1]');
         if ($this->crawlerHasNodes($mainImageCrawler)) {
             $image = $mainImageCrawler->attr('src');
-            $this->removeDomNodes($newsPageCrawler, '//div[contains(@id,"post-media")]');
+            $this->removeDomNodes($contentCrawler, '//div[contains(@class,"post-media")]');
         }
 
         if ($image !== null && $image !== '') {
             $image = $this->encodeUri(UriResolver::resolve($image, $this->getSiteUrl()));
             $previewNewsDTO->setImage($image);
         }
-
-        $contentCrawler = $newsPageCrawler->filterXPath('//div[contains(@class,"single-blog-content")]');
-
-        $descriptionCrawler = $contentCrawler->filterXPath('//p[1]/strong');
-        if ($this->crawlerHasNodes($descriptionCrawler) && $text = $descriptionCrawler->text()) {
-            $description = $text;
-            $this->removeDomNodes($contentCrawler, '//p[1]/strong');
-        }
-
-        $this->removeDomNodes($contentCrawler, '//div[contains(@class,"telegram-subscribe")]');
+        $this->removeDomNodes($contentCrawler, '//*[contains(@class,"post-title")] | //div[contains(@class,"post-meta")] | //div[contains(@class,"pluso")] | //img[@src=" "]');
 
         if ($description && $description !== '') {
             $previewNewsDTO->setDescription($description);

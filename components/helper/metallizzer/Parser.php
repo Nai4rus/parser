@@ -4,7 +4,6 @@ namespace app\components\helper\metallizzer;
 
 use app\components\parser\NewsPost;
 use app\components\parser\NewsPostItem;
-use Exception;
 use Symfony\Component\DomCrawler\Crawler;
 
 class Parser
