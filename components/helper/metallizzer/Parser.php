@@ -273,6 +273,13 @@ class Parser
                 $item = $this->textNode($text);
 
                 if ($item) {
+                    try {
+                        if ($node->parents()->closest($this->glued['quote'])) {
+                            $item['type'] = NewsPostItem::TYPE_QUOTE;
+                        }
+                    } catch (Exception $e) {
+                    }
+
                     $this->items = array_merge($this->items, [$item]);
                 }
             }
