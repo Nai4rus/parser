@@ -2,30 +2,38 @@
 
 namespace app\components\parser\news;
 
+use app\components\helper\metallizzer\Text;
 use app\components\helper\nai4rus\AbstractBaseParser;
 use app\components\helper\nai4rus\PreviewNewsDTO;
 use app\components\parser\NewsPost;
-use DateTimeImmutable;
-use DateTimeZone;
+use DOMNode;
 use RuntimeException;
 use Symfony\Component\DomCrawler\Crawler;
 use Symfony\Component\DomCrawler\UriResolver;
 use Throwable;
 
-class PrometheusRuParser extends AbstractBaseParser
+class ViamWorksRuParser extends AbstractBaseParser
 {
     public const USER_ID = 2;
     public const FEED_ID = 2;
 
+    public static function run(): array
+    {
+        $parser = new static();
+
+        return $parser->parse(5, 50);
+    }
+
     protected function getSiteUrl(): string
     {
-        return 'https://prometheus.ru/';
+        return 'http://viam-works.ru/';
     }
 
     protected function getPreviewNewsDTOList(int $minNewsCount = 10, int $maxNewsCount = 100): array
     {
         $previewList = [];
-        $uriPreviewPage = UriResolver::resolve('/feed', $this->getSiteUrl());
+
+        $uriPreviewPage = UriResolver::resolve("/ru/last-number", $this->getSiteUrl());
 
         try {
             $previewNewsContent = $this->getPageContent($uriPreviewPage);
@@ -36,17 +44,11 @@ class PrometheusRuParser extends AbstractBaseParser
             }
         }
 
-        $previewNewsCrawler = $previewNewsCrawler->filterXPath('//item');
+        $previewNewsCrawler = $previewNewsCrawler->filterXPath('//div[contains(@class,"art-article")]//div[contains(@class,"j_read")]/a[1]');
 
         $previewNewsCrawler->each(function (Crawler $newsPreview) use (&$previewList) {
-            $title = $newsPreview->filterXPath('//title')->text();
-            $uri = $newsPreview->filterXPath('//link')->text();
-
-            $publishedAtString = $newsPreview->filterXPath('//pubDate')->text();
-            $publishedAt = DateTimeImmutable::createFromFormat(DATE_RFC1123, $publishedAtString);
-            $publishedAtUTC = $publishedAt->setTimezone(new DateTimeZone('UTC'));
-
-            $previewList[] = new PreviewNewsDTO($uri, $publishedAtUTC, $title);
+            $uri = $this->encodeUri(UriResolver::resolve($newsPreview->attr('href'), $this->getSiteUrl()));
+            $previewList[] = new PreviewNewsDTO($uri);
         });
 
         $previewList = array_slice($previewList, 0, $maxNewsCount);
@@ -63,28 +65,30 @@ class PrometheusRuParser extends AbstractBaseParser
 
         $newsPageCrawler = new Crawler($newsPage);
 
+        $contentCrawler = $newsPageCrawler->filter('.art-postcontent .art-article');
+        $titleXPath = '//div[contains(@class,"j_artname")][1]';
+        $this->removeDomNodes($contentCrawler, "{$titleXPath}/preceding-sibling::*");
+        $titleCrawler = $contentCrawler->filterXPath($titleXPath);
+        if ($this->crawlerHasNodes($titleCrawler)) {
+            $title = Text::trim($this->normalizeSpaces($titleCrawler->text()));
+            $previewNewsDTO->setTitle($title);
+            $this->removeDomNodes($contentCrawler, $titleXPath);
+        }
+
+        $this->removeDomNodes($contentCrawler, '//div[contains(@id,"show_comments")]');
+
         $image = null;
 
-        $mainImageCrawler = $newsPageCrawler->filterXPath('//div[contains(@id,"post-media")]/img');
+        $mainImageCrawler = $contentCrawler->filterXPath('//img[1]');
         if ($this->crawlerHasNodes($mainImageCrawler)) {
             $image = $mainImageCrawler->attr('src');
-            $this->removeDomNodes($newsPageCrawler, '//div[contains(@id,"post-media")]');
+            $this->removeDomNodes($contentCrawler, '//img[1]');
         }
 
         if ($image !== null && $image !== '') {
             $image = $this->encodeUri(UriResolver::resolve($image, $this->getSiteUrl()));
             $previewNewsDTO->setImage($image);
         }
-
-        $contentCrawler = $newsPageCrawler->filterXPath('//div[contains(@class,"single-blog-content")]');
-
-        $descriptionCrawler = $contentCrawler->filterXPath('//p[1]/strong');
-        if ($this->crawlerHasNodes($descriptionCrawler) && $text = $descriptionCrawler->text()) {
-            $description = $text;
-            $this->removeDomNodes($contentCrawler, '//p[1]/strong');
-        }
-
-        $this->removeDomNodes($contentCrawler, '//div[contains(@class,"telegram-subscribe")]');
 
         if ($description && $description !== '') {
             $previewNewsDTO->setDescription($description);
@@ -95,5 +99,21 @@ class PrometheusRuParser extends AbstractBaseParser
         $newsPostItemDTOList = $this->parseNewsPostContent($contentCrawler, $previewNewsDTO);
 
         return $this->factoryNewsPost($previewNewsDTO, $newsPostItemDTOList);
+    }
+
+    protected function isFormattingTag(DOMNode $node): bool
+    {
+        $formattingTags = [
+            'strong' => true,
+            'b' => true,
+            'span' => true,
+            's' => true,
+            'i' => true,
+            'a' => true,
+            'em' => true,
+            'sup' => true,
+        ];
+
+        return isset($formattingTags[$node->nodeName]);
     }
 }
