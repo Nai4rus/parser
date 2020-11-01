@@ -7,6 +7,7 @@ use app\components\helper\nai4rus\PreviewNewsDTO;
 use app\components\parser\NewsPost;
 use DateTimeImmutable;
 use DateTimeZone;
+use DOMElement;
 use RuntimeException;
 use Symfony\Component\DomCrawler\Crawler;
 use Symfony\Component\DomCrawler\UriResolver;
@@ -71,23 +72,38 @@ class SmolDailyParser extends AbstractBaseParser
         $newsPageCrawler = new Crawler($newsPage);
         $newsPostCrawler = $newsPageCrawler->filterXPath('//div[contains(@class,"mainpost")]');
 
-        $image = null;
-        $mainImageCrawler = $newsPageCrawler->filterXPath('//div[@itemprop="image"]/img');
-        if ($this->crawlerHasNodes($mainImageCrawler)) {
-            $image = $mainImageCrawler->attr('src');
-        }
-        if ($image !== null && $image !== '') {
-            $previewNewsItem->setImage(UriResolver::resolve($image, $uri));
-        }
-
         $contentCrawler = $newsPostCrawler;
         $this->removeDomNodes($contentCrawler, '//p[contains(@class,"wp-caption-text")]');
-        $this->removeDomNodes($contentCrawler, '//div[contains(@class,"wp-caption alignleft")]');
 
         $this->purifyNewsPostContent($contentCrawler);
 
         $newsPostItemDTOList = $this->parseNewsPostContent($contentCrawler, $previewNewsItem);
 
         return $this->factoryNewsPost($previewNewsItem, $newsPostItemDTOList);
+    }
+
+    protected function getImageLinkFromNode(DOMElement $node): string
+    {
+        if ($node->hasAttribute('srcset')) {
+            $srcset = $node->getAttribute('srcset');
+            $parts = explode(', ',$srcset);
+            $maxSize = null;
+            $maxSizeSrc = null;
+            foreach ($parts as $srcString){
+                $delimiterPosition =mb_strrpos($srcString,' ');
+                $size = (int) mb_substr($srcString,$delimiterPosition);
+                if($maxSize < $size){
+                    $maxSize = $size;
+                    $maxSizeSrc= mb_substr($srcString,0,$delimiterPosition);
+                }
+            }
+
+            if ($maxSizeSrc !== '' && $maxSizeSrc !== null) {
+                return $maxSizeSrc;
+            }
+
+        }
+
+        return $node->getAttribute('src');
     }
 }
