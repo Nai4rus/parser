@@ -2,12 +2,14 @@
 
 namespace app\components\parser\news;
 
-use app\components\Helper;
 use app\components\helper\nai4rus\AbstractBaseParser;
+use app\components\helper\nai4rus\NewsPostItemDTO;
 use app\components\helper\nai4rus\PreviewNewsDTO;
 use app\components\parser\NewsPost;
 use DateTimeImmutable;
 use DateTimeZone;
+use DOMElement;
+use DOMNode;
 use RuntimeException;
 use Symfony\Component\DomCrawler\Crawler;
 use Symfony\Component\DomCrawler\UriResolver;
@@ -20,7 +22,7 @@ class KchrParser extends AbstractBaseParser
 
     protected function getSiteUrl(): string
     {
-        return 'https://kchr.ru';
+        return 'https://kchr.ru/';
     }
 
     protected function getPreviewNewsDTOList(int $minNewsCount = 10, int $maxNewsCount = 100): array
@@ -66,31 +68,82 @@ class KchrParser extends AbstractBaseParser
         $newsPage = $this->getPageContent($uri);
 
         $newsPageCrawler = new Crawler($newsPage);
-        $newsPostCrawler = $newsPageCrawler->filterXPath('//div[@class="DetailNews"]');
+        $contentCrawler = $newsPageCrawler->filter('.DetailNews');
 
-        $mainImageCrawler = $newsPostCrawler->filterXPath('//img')->first();
-        if ($this->crawlerHasNodes($mainImageCrawler)) {
-            $image = $mainImageCrawler->attr('src');
-            $this->removeDomNodes($newsPostCrawler, '//img[1]');
-        }
-        if ($image !== null && $image !== '') {
-            $image = UriResolver::resolve($image, $uri);
-            $previewNewsDTO->setImage(Helper::encodeUrl($image));
-        }
-
-        $previewNewsDTO->setDescription(null);
-
-
-        $contentCrawler = $newsPostCrawler->filterXPath('//div[@class="TextBl"]');
-
-        $this->removeDomNodes($contentCrawler,'//div[contains(@class,"mobile-slider")]');
-        $this->removeDomNodes($contentCrawler, '//script | //video');
-        $this->removeDomNodes($contentCrawler, '//table');
-
+        $this->removeDomNodes($contentCrawler, '//div[contains(@class,"mobile-slider")]');
+        $this->removeDomNodes($contentCrawler, '//div[contains(@class,"sliderkit-nav")]');
         $this->purifyNewsPostContent($contentCrawler);
 
         $newsPostItemDTOList = $this->parseNewsPostContent($contentCrawler, $previewNewsDTO);
-
         return $this->factoryNewsPost($previewNewsDTO, $newsPostItemDTOList);
+    }
+
+    protected function searchLinkNewsItem(DOMNode $node, PreviewNewsDTO $newsPostDTO): ?NewsPostItemDTO
+    {
+        if ($this->isImageType($node)) {
+            return null;
+        }
+
+        if ($node->nodeName === '#text' || !$this->isLink($node)) {
+            $parentNode = $this->getRecursivelyParentNode($node, function (DOMNode $parentNode) {
+                $isLink = $this->isLink($parentNode);
+
+                if ($this->getRootContentNodeStorage()->contains($parentNode) && !$isLink) {
+                    return null;
+                }
+
+                return $isLink;
+            });
+            $node = $parentNode ?: $node;
+        }
+
+
+        if (!$node instanceof DOMElement || !$this->isLink($node)) {
+            return null;
+        }
+
+        $link = UriResolver::resolve($node->getAttribute('href'), $newsPostDTO->getUri());
+        if ($link === null) {
+            return null;
+        }
+
+        if ($this->getNodeStorage()->contains($node)) {
+            throw new RuntimeException('Тег уже сохранен');
+        }
+
+        $linkText = null;
+
+        if ($this->hasText($node) && trim($node->textContent, " /\t\n\r\0\x0B") !== trim($link, " /\t\n\r\0\x0B")) {
+            $linkText = $this->normalizeSpaces($node->textContent);
+        }
+
+        if (str_contains($node->getAttribute('class'), 'colorbox_img')) {
+            foreach ($node->childNodes as $childNode) {
+                if (!$childNode instanceof DOMElement || $childNode->tagName !== 'img') {
+                    continue;
+                }
+                $childNode->setAttribute('src', $node->getAttribute('href'));
+                $node->setAttribute('href', '');
+
+                return null;
+            }
+        }
+
+        $newsPostItem = NewsPostItemDTO::createLinkItem($link, $linkText);
+
+        $this->getNodeStorage()->removeAll($this->getNodeStorage());
+        $this->getNodeStorage()->attach($node, $newsPostItem);
+
+        return $newsPostItem;
+    }
+
+    protected function getImageLinkFromNode(DOMElement $node): string
+    {
+        $parentNode = $node->parentNode;
+        if ($parentNode && str_contains($parentNode->getAttribute('class'), 'colorbox_img')) {
+            return $parentNode->getAttribute('href');
+        }
+
+        return $node->getAttribute('src');
     }
 }
