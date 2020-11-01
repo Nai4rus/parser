@@ -2,6 +2,7 @@
 
 namespace app\components\helper\metallizzer;
 
+use app\components\parser\NewsPost;
 use app\components\parser\NewsPostItem;
 use Symfony\Component\DomCrawler\Crawler;
 
@@ -9,17 +10,28 @@ class Parser
 {
     const YOUTUBE_REGEX = '/(youtu\.be\/|youtube\.com\/(watch\?(.*&)?v=|(embed|v)\/))([\w-]{11})/';
 
+    protected $items     = [];
     protected $selectors = [
         'header' => ['h1', 'h2', 'h3', 'h4', 'h5', 'h6'],
+        'link'   => ['a'],
         'image'  => ['img'],
         'quote'  => ['blockquote'],
-        'link'   => ['a'],
         'video'  => ['iframe'],
     ];
 
     protected $glued     = [];
     protected $callbacks = [];
-    protected $subNode   = './*/node()';
+    protected $subNode   = '//node()';
+    protected $ignore    = [
+        'script',
+        'noscript',
+        'style',
+        'video',
+        'embed',
+        'form',
+        'table',
+    ];
+    protected $joinText = true;
 
     public static function flatten(array $blocks)
     {
@@ -34,6 +46,31 @@ class Parser
         return array_filter($result);
     }
 
+    public function addIgnore($selector, $merge = true)
+    {
+        if (!is_array($selector)) {
+            $selector = [$selector];
+        }
+
+        if ($merge) {
+            $this->ignore = array_merge($this->ignore, $selector);
+        } else {
+            $this->ignore = $selector;
+        }
+
+        return $this;
+    }
+
+    public function setJoinText($joinText)
+    {
+        $this->joinText = (bool) $joinText;
+
+        return $this;
+    }
+
+    /**
+     * Obsolete. Reserved for backward compatibility.
+     */
     public function setDeep(int $deep)
     {
         if ($deep > 0) {
@@ -43,11 +80,53 @@ class Parser
         return $this;
     }
 
+    /**
+     * Obsolete. Reserved for backward compatibility.
+     */
     public function setSubNode(string $subNode)
     {
         $this->subNode = $subNode;
 
         return $this;
+    }
+
+    public function fill(NewsPost $post, Crawler $crawler)
+    {
+        $items = $this->parseMany($crawler);
+
+        foreach ($items as $item) {
+            if ($item['type'] === NewsPostItem::TYPE_IMAGE) {
+                if (!$post->image) {
+                    $post->image = $item['image'];
+
+                    continue;
+                } elseif ($post->image == $item['image']) {
+                    continue;
+                }
+            }
+
+            if ($post->description == '~' && $item['type'] === NewsPostItem::TYPE_TEXT) {
+                $temp = Text::split($item['text']);
+
+                $post->description = $temp['description'];
+
+                if (strlen($temp['content']) > 0) {
+                    $item['text'] = $temp['content'];
+
+                    $post->addItem(new NewsPostItem(...array_values($item)));
+                }
+
+                continue;
+            }
+
+            $post->addItem(new NewsPostItem(...array_values($item)));
+        }
+
+        if ($post->description == '~') {
+            $post->description = $post->title;
+        }
+
+        return $post;
     }
 
     public function parseMany(Crawler $node)
@@ -57,33 +136,112 @@ class Parser
         }));
     }
 
-    public function parse(Crawler $node, int $i)
+    public function parse(Crawler $node, int $i = 0)
     {
+        if (count($this->ignore)) {
+            foreach ($this->ignore as $selector) {
+                if ($node->matches($selector)) {
+                    return [];
+                }
+            }
+
+            $node->filterXPath('//'.implode('|//', $this->ignore))->each(function (Crawler $crawler) {
+                $domNode = $crawler->getNode(0);
+
+                if ($domNode && $domNode->parentNode) {
+                    $domNode->parentNode->removeChild($domNode);
+                }
+            });
+        }
+
         $this->glued = array_map(function ($v) {
             return implode(',', $v);
         }, $this->selectors);
 
-        foreach ($this->selectors as $type => $value) {
-            if (!$this->isNodeMatches($node, $type)) {
+        $this->items = [];
+
+        $this->parseNodes($node);
+
+        $items = $this->items;
+
+        if (!$this->joinText) {
+            return $this->filterItems($items);
+        }
+
+        $lastItem = false;
+        $lastKey  = null;
+
+        foreach ($items as $key => $item) {
+            if ($lastItem
+                && NewsPostItem::TYPE_TEXT == $item['type']
+                && $item['type'] == $lastItem['type']
+            ) {
+                $space = '';
+
+                if (!preg_match('/^[[:punct:]]/', $item['text'])
+                    && !preg_match('/\n$/', $items[$lastKey]['text'])
+                ) {
+                    $space = ' ';
+                }
+
+                $items[$lastKey]['text'] .= $space.$item['text'];
+
+                unset($items[$key]);
+
                 continue;
             }
 
-            $method = 'parse'.ucfirst($type);
+            $lastItem = $item;
+            $lastKey  = $key;
+        }
 
-            if (false !== $item = $this->{$method}($node, $i)) {
-                return [$item];
+        return $this->filterItems($items);
+    }
+
+    public function parseNodes(Crawler $node, int $i = 0)
+    {
+        $found = false;
+
+        foreach ($this->selectors as $type => $value) {
+            if ($this->isNodeMatches($node, $type)) {
+                $method = 'parse'.ucfirst($type);
+                $item   = $this->{$method}($node, $i);
+
+                $this->items = array_merge($this->items, [$item]);
+
+                return;
+            }
+
+            if ($this->isNodeContains($node, $type)) {
+                $found = true;
+
+                break;
             }
         }
 
-        if ($items = $this->parseSubnodes($node, $i)) {
-            return $items;
+        if (!$found) {
+            if ($node->nodeName() == 'br') {
+                if (null !== $key = array_key_last($this->items)) {
+                    $item = $this->items[$key];
+
+                    if ($item['type'] == NewsPostItem::TYPE_TEXT) {
+                        $this->items[$key]['text'] .= PHP_EOL;
+                    } else {
+                        $this->items = array_merge($this->items, [$this->textNode(PHP_EOL)]);
+                    }
+                } else {
+                    $this->items = array_merge($this->items, [$this->textNode(PHP_EOL)]);
+                }
+            } elseif ($node->nodeName() == '#text') {
+                $text = Text::normalizeWhitespace($node->text(null, false));
+
+                $this->items = array_merge($this->items, [$this->textNode($text)]);
+            }
         }
 
-        $text = $node->nodeName() == 'br'
-            ? PHP_EOL
-            : Text::normalizeWhitespace($node->text(null, false));
-
-        return array_filter([$this->textNode($text)]);
+        $node->filterXPath('*/node()')->each(function ($node, $i) use (&$items) {
+            $this->parseNodes($node, $i);
+        });
     }
 
     public function addCallback(string $type, callable $callback)
@@ -110,44 +268,33 @@ class Parser
         return $this;
     }
 
-    protected function parseSubnodes(Crawler $node, int $i)
+    protected function filterItems(array $items)
     {
-        $items = array_filter($node->filterXpath($this->subNode)->each(function ($node, $i) {
-            foreach ($this->selectors as $type => $value) {
-                $method = 'parse'.ucfirst($type);
-
-                if (false !== $item = $this->{$method}($node, $i)) {
-                    return $item;
-                }
+        return array_filter($items, function ($item) {
+            if (empty($item['type'])) {
+                return false;
             }
 
-            $text = $node->nodeName() == 'br'
-                ? PHP_EOL
-                : Text::normalizeWhitespace($node->text(null, false));
+            switch ($item['type']) {
+                case NewsPostItem::TYPE_HEADER:
+                case NewsPostItem::TYPE_TEXT:
+                case NewsPostItem::TYPE_QUOTE:
+                    $text = Text::trim($item['text']);
 
-            return $this->textNode($text);
-        }));
+                    return !preg_match('/^(\p{P}|\p{S}|\s)$/u', $text) && strlen($text) > 0;
 
-        $lastItem = false;
-        $lastKey  = null;
+                case NewsPostItem::TYPE_IMAGE:
+                    return !empty($item['image']);
 
-        foreach ($items as $key => $item) {
-            if ($lastItem
-                && NewsPostItem::TYPE_TEXT == $item['type']
-                && $item['type'] == $lastItem['type']
-            ) {
-                $items[$lastKey]['text'] .= $item['text'];
+                case NewsPostItem::TYPE_LINK:
+                    return !empty($item['link']);
 
-                unset($items[$key]);
-
-                continue;
+                case NewsPostItem::TYPE_VIDEO:
+                    return !empty($item['youtubeId']);
             }
 
-            $lastItem = $item;
-            $lastKey  = $key;
-        }
-
-        return $items;
+            return false;
+        });
     }
 
     protected function textNode(string $text)
@@ -255,11 +402,6 @@ class Parser
             return false;
         }
 
-        // Если внутри ссылки содержится изображение, возвращаем его
-        if ($this->isNodeContains($node, 'image')) {
-            return $this->parseImage($node, $i);
-        }
-
         $type  = NewsPostItem::TYPE_LINK;
         $link  = $node->filter($this->glued['link'])->first();
         $image = null;
@@ -271,6 +413,14 @@ class Parser
             list($image, $url) = [$url, $image];
 
             $type = NewsPostItem::TYPE_IMAGE;
+        } elseif ($this->isNodeContains($node, 'image')) {
+            // Если внутри ссылки содержится изображение, возвращаем его
+
+            return $this->parseImage($node, $i);
+        }
+
+        if (!preg_match('/^(?:(?:(?<proto>https?|ftp):)?\/)?\//i', $link->attr('href'))) {
+            return $this->textNode($text ?: $link->attr('href'));
         }
 
         return [

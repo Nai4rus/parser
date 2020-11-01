@@ -87,6 +87,11 @@ class OmskPress extends TyRunBaseParser implements ParserInterface
             );
 
             /**
+             * Предложения содержащиеся в описании (для последующей проверки при парсинга тела новости)
+             */
+            $descriptionSentences = explode('. ', html_entity_decode($newPost->description));
+
+            /**
              * Получаем полный html новости
              */
             $newsContent = $curl->get($newPost->original);
@@ -110,11 +115,11 @@ class OmskPress extends TyRunBaseParser implements ParserInterface
                 $articleContent = $newsContent->filter('.entry-content')->children();
                 $stopParsing = false;
                 if ($articleContent->count()) {
-                    $articleContent->each(function ($node) use ($newPost, &$stopParsing) {
+                    $articleContent->each(function ($node) use ($newPost, &$stopParsing, $descriptionSentences) {
                         if ($stopParsing) {
                             return;
                         }
-                        self::parseNode($node, $newPost, self::MAX_PARSE_DEPTH, $stopParsing);
+                        self::parseNode($node, $newPost, self::MAX_PARSE_DEPTH, $stopParsing, $descriptionSentences);
                     });
                 }
             }
@@ -125,7 +130,7 @@ class OmskPress extends TyRunBaseParser implements ParserInterface
         return $posts;
     }
 
-    protected static function parseNode(Crawler $node, NewsPost $newPost, int $maxDepth, bool &$stopParsing): void
+    protected static function parseNode(Crawler $node, NewsPost $newPost, int $maxDepth, bool &$stopParsing, $descriptionSentences = []): void
     {
         /**
          * Пропускаем элемент, если элемент имеет определенный класс
@@ -166,7 +171,7 @@ class OmskPress extends TyRunBaseParser implements ParserInterface
                 }
                 break;
             case 'p':
-                self::parseParagraph($node, $newPost);
+                self::parseParagraph($node, $newPost, $descriptionSentences);
                 if ($nodes = $node->children()) {
                     $nodes->each(function ($node) use ($newPost, $maxDepth, &$stopParsing) {
                         self::parseNode($node, $newPost, $maxDepth, $stopParsing);
@@ -202,7 +207,6 @@ class OmskPress extends TyRunBaseParser implements ParserInterface
     }
 
 
-
     /**
      * Парсер для тегов <a>
      * @param Crawler $node
@@ -226,12 +230,30 @@ class OmskPress extends TyRunBaseParser implements ParserInterface
 
     /**
      * Парсер для тегов <p>
-     * @param Crawler $node
-     * @param NewsPost $newPost
+     * Дополнительно сверяем содержимое тегов с описанием новости (по предложениям), дубли не добавляем
+     * @param Crawler $node текущий элемент для парсинга
+     * @param NewsPost $newPost объект новости
+     * @param array $descriptionSentences массив предложений описания новости
      */
-    private static function parseParagraph(Crawler $node, NewsPost $newPost): void
+    private static function parseParagraph(Crawler $node, NewsPost $newPost, array $descriptionSentences): void
     {
-        if (!empty($node->text())) {
+        $nodeSentences = array_map(function ($item) {
+            return !empty($item) ? trim($item, '  \t\n\r\0\x0B.') : false;
+        }, explode('.', $node->text()));
+        $intersect = array_intersect($nodeSentences, $descriptionSentences);
+
+        /**
+         * Если в тексте есть хоть одно уникальное предложение ( по сравнению с описанием новости )
+         */
+        if (!empty($node->text()) && count($intersect) < count($nodeSentences)) {
+            /**
+             * Дополнительно проверяем, что оставшийся текст не является подстрокой описания
+             */
+            $text = implode('. ', array_diff($nodeSentences, $intersect));
+            if (empty($text) || stristr($newPost->description, $text)) {
+                return;
+            }
+
             $type = NewsPostItem::TYPE_TEXT;
             if ($node->nodeName() == self::QUOTE_TAG) {
                 $type = NewsPostItem::TYPE_QUOTE;
@@ -240,7 +262,7 @@ class OmskPress extends TyRunBaseParser implements ParserInterface
             $newPost->addItem(
                 new NewsPostItem(
                     $type,
-                    $node->text(),
+                    $text,
                     null,
                     null,
                     null,
@@ -250,15 +272,14 @@ class OmskPress extends TyRunBaseParser implements ParserInterface
     }
 
 
-
     /**
      * В RSS битый дескрипшн, в конце всегда идет коприайт, в виде ссылки на сайт
-     * Например ( после обработки @see Helper::prepareString ) :
+     * Например ( после обработки @param string $description
+     * @return mixed
+     * @see Helper::prepareString ) :
      * [&#8230;] The post В Тверской области лишили прав водителя, ездившего " под кайфом" first appeared on TVTver.ru.
      * Обрезаем описание до последнего законченного предложения
      *
-     * @param string $description
-     * @return mixed
      */
     private static function prepareDescription(string $description): string
     {

@@ -13,7 +13,41 @@ use Symfony\Component\DomCrawler\Crawler;
  */
 abstract class TyRunBaseParser
 {
-    abstract protected static function parseNode(Crawler $node, NewsPost $newPost, int $maxDepth, bool &$stopParsing);
+    /**
+     * Базовый метод для разбора элемента, в основном запускается рекурсивно
+     * @param Crawler $node текущий элемент
+     * @param NewsPost $newPost объект новости
+     * @param int $maxDepth максимальная глубина парсинга дочерних элементов
+     * @param bool $stopParsing флаг о прекращении парсинга, передаваемый по ссылке, т.к. метод может быть вызван внутри замыкания
+     * @return mixed
+     */
+    abstract protected static function parseNode(
+        Crawler $node,
+        NewsPost $newPost,
+        int $maxDepth,
+        bool &$stopParsing
+    );
+
+    /**
+     * Парсер для тегов <a>
+     * @param Crawler $node
+     * @param NewsPost $newPost
+     */
+    protected static function parseLink(Crawler $node, NewsPost $newPost): void
+    {
+        $url = self::urlEncode($node->attr('href'));
+        if (filter_var($url, FILTER_VALIDATE_URL)) {
+            $newPost->addItem(
+                new NewsPostItem(
+                    NewsPostItem::TYPE_LINK,
+                    null,
+                    null,
+                    $node->attr('href'),
+                    null,
+                    null
+                ));
+        }
+    }
 
     /**
      * Парсер для тегов <ul>, <ol> и т.п.
@@ -45,7 +79,7 @@ abstract class TyRunBaseParser
      * @param string $videoId
      * @param NewsPost $newPost
      */
-    protected static function addVideo(string $videoId, NewsPost $newPost): void
+    protected static function addVideo(?string $videoId, NewsPost $newPost): void
     {
         if ($videoId) {
             $newPost->addItem(
@@ -64,16 +98,17 @@ abstract class TyRunBaseParser
      * Парсер для тегов <img>
      * @param Crawler $node
      * @param NewsPost $newPost
+     * @param string $lazySrcAttr название атрибута в котором лежит ссылка на изображение при lazyLoad
      */
-    protected static function parseImage(Crawler $node, NewsPost $newPost): void
+    protected static function parseImage(Crawler $node, NewsPost $newPost, $lazySrcAttr = 'data-src'): void
     {
-
-        if ($srs = self::getProperImageSrc($node)) {
+        $src = self::getProperImageSrc($node, $lazySrcAttr);
+        if ($src && $src != $newPost->image) {
             $newPost->addItem(
                 new NewsPostItem(
                     NewsPostItem::TYPE_IMAGE,
                     null,
-                    $srs,
+                    $src,
                     null,
                     null,
                     null
@@ -92,7 +127,7 @@ abstract class TyRunBaseParser
         /**
          * @see https://stackoverflow.com/questions/2936467/parse-youtube-video-id-using-preg-match
          */
-        $pattern = '/(?:youtube(?:-nocookie)?\.com/(?:[^/]+/.+/|(?:v|e(?:mbed)?)/|.*[?&]v=)|youtu\.be/)([^"&?/\s]{11})/i';
+        $pattern = '/(?:youtube(?:-nocookie)?\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})/i';
         if (preg_match($pattern, $str, $match)) {
             return $match[1];
         }
@@ -122,22 +157,89 @@ abstract class TyRunBaseParser
      * - если итоговый src не пустой и в классе указана константа MAIN_PAGE_UTI,
      * пробуем исправить ссылку, возможно ссылка относительная
      * @param Crawler $node элемент изображения
+     * @param string $lazySrcAttr
      * @return string|null
      */
-    protected static function getProperImageSrc(Crawler $node): ?string
+    protected static function getProperImageSrc(Crawler $node, string $lazySrcAttr): ?string
     {
-        $src = $node->attr('src') ?? $node->attr('data-src');
-        if ($src && !filter_var($src, FILTER_VALIDATE_URL)) {
+        $src = $node->attr('src') ?? $node->attr($lazySrcAttr);
+        $src = self::absoluteUrl($src);
+        return $src ? self::urlEncode($src) : false;
+    }
+
+    /**
+     * Исправляет относительные ссылки на абсолютные для текущего сайта,
+     * указанного в MAIN_PAGE_URI текущего класса
+     * @param string $url
+     * @return string|null
+     */
+    protected static function absoluteUrl(string $url): ?string
+    {
+        if ($url && !filter_var($url, FILTER_VALIDATE_URL)) {
             if (static::MAIN_PAGE_URI) {
-                if (strpos($src, '/') == 0) {
-                    return static::MAIN_PAGE_URI . $src;
+                if (strpos($url, '/') == 0) {
+                    return static::MAIN_PAGE_URI . $url;
                 } else {
-                    return static::MAIN_PAGE_URI . '/' . $src;
+                    return static::MAIN_PAGE_URI . '/' . $url;
                 }
             }
             return false;
         }
-        return $src;
+        return $url;
+    }
+
+    /**
+     * Парсер для тегов <p> для сайтов у которых описание содержит часть текста статьи.
+     * Дополнительно сверяем содержимое тегов с описанием новости (по предложениям), дубли не добавляем
+     * @param Crawler $node текущий элемент для парсинга
+     * @param NewsPost $newPost объект новости
+     * @param array $descriptionSentences массив предложений описания новости (explode('. ', $description))
+     */
+    protected static function parseDescriptionIntersectParagraph(Crawler $node, NewsPost $newPost, array $descriptionSentences): void
+    {
+        $nodeSentences = array_map(function ($item) {
+            return !empty($item) ? trim($item, '  \t\n\r\0\x0B.') : false;
+        }, explode('.', $node->text()));
+        $intersect = array_intersect($nodeSentences, $descriptionSentences);
+
+        /**
+         * Если в тексте есть хоть одно уникальное предложение ( по сравнению с описанием новости )
+         */
+        if (!empty($node->text()) && count($intersect) < count($nodeSentences)) {
+            /**
+             * Дополнительно проверяем, что оставшийся текст не является подстрокой описания
+             */
+            $text = trim(implode('. ', array_diff($nodeSentences, $intersect)));
+
+            if (empty($text) || stristr($newPost->description, $text)) {
+                return;
+            }
+
+            $type = NewsPostItem::TYPE_TEXT;
+            if ($node->nodeName() == static::QUOTE_TAG) {
+                $type = NewsPostItem::TYPE_QUOTE;
+            }
+
+            $newPost->addItem(
+                new NewsPostItem(
+                    $type,
+                    $text,
+                    null,
+                    null,
+                    null,
+                    null
+                ));
+        }
+    }
+
+    /**
+     * Кодирует кириллицу в ссылках, для прохождения валидации Url (FILTER_VALIDATE_URL)
+     * @param string $url
+     * @return string
+     */
+    protected static function urlEncode(string $url): string
+    {
+        return str_replace(['%3A', '%2F'], [':', '/'], rawurlencode($url));
     }
 
 }
