@@ -21,7 +21,12 @@ class Text
             return '';
         }
 
-        return preg_replace('/[\pZ\pC]{1,}/u', ' ', self::trim($value));
+        $pairs = [
+            '/([\pC]{1,})/u' => PHP_EOL,
+            '/([\pZ]{1,})/u' => ' ',
+        ];
+
+        return self::trim(preg_replace(array_keys($pairs), array_values($pairs), self::trim($value)));
     }
 
     public static function decode(string $string)
