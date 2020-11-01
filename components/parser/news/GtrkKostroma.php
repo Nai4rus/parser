@@ -2,6 +2,7 @@
 
 namespace app\components\parser\news;
 
+use app\components\helper\metallizzer\Text;
 use app\components\helper\nai4rus\AbstractBaseParser;
 use app\components\helper\nai4rus\PreviewNewsDTO;
 use app\components\parser\NewsPost;
@@ -22,14 +23,13 @@ class GtrkKostroma extends AbstractBaseParser
         return 'https://gtrk-kostroma.ru/';
     }
 
-    protected function getPreviewNewsDTOList(int $minNewsCount = 10, int $maxNewsCount = 100): array
+    protected function getPreviewNewsDTOList(int $minNewsCount = 10, int $maxNewsCount = 50): array
     {
         $previewNewsDTOList = [];
         $pageNumber = 1;
 
         while (count($previewNewsDTOList) < $maxNewsCount) {
-            $urn = "/?PAGEN_2={$pageNumber}";
-            $uriPreviewPage = UriResolver::resolve($urn, $this->getSiteUrl());
+            $uriPreviewPage = UriResolver::resolve("/?PAGEN_2={$pageNumber}", $this->getSiteUrl());
             $pageNumber++;
 
             try {
@@ -42,27 +42,15 @@ class GtrkKostroma extends AbstractBaseParser
                 break;
             }
 
-            $previewNewsXPath = '//div[@class="row news-list news-list--lenta"]//div[contains(@class,"news news--lenta")]';
-            $previewNewsCrawler = $previewNewsCrawler->filterXPath($previewNewsXPath);
+            $previewNewsCrawler = $previewNewsCrawler->filter('.news--lenta');
 
             $previewNewsCrawler->each(function (Crawler $newsPreview) use (&$previewNewsDTOList) {
-                $title = $newsPreview->filterXPath('//span[@class="news__name"]')->text();
-                $uriCrawler = $newsPreview->filterXPath('//a[1]')->attr('href');
-                $uri = UriResolver::resolve($uriCrawler, $this->getSiteUrl());
+                $title = $newsPreview->filter('.news__name')->text();
+                $uri = UriResolver::resolve($newsPreview->filterXPath('//a[1]')->attr('href'), $this->getSiteUrl());
 
-                $publishedAtString = $newsPreview->filterXPath('//span[@class="news__date"]')->text();
-                $publishedAtString = explode(' ', $publishedAtString);
-                if ($publishedAtString[1] === 'часа' || $publishedAtString[1] === 'назад') {
-                    $publishedAtString = date('d m Y, H:i');
-                } else {
-                    $publishedAtString[1] = $this->convertStringMonthToNumber($publishedAtString[1]);
-                    $publishedAtString = $publishedAtString[0].' '.$publishedAtString[1].' '.$publishedAtString[2].' '.$publishedAtString[3];
-                }
-                $timezone = new DateTimeZone('Europe/Moscow');
-                $publishedAt = DateTimeImmutable::createFromFormat('d m Y, H:i', $publishedAtString, $timezone);
-                $publishedAtUTC = $publishedAt->setTimezone(new DateTimeZone('UTC'));
+                $publishedAt = $this->getPublishedAt($newsPreview);
 
-                $previewNewsDTOList[] = new PreviewNewsDTO($this->encodeUri($uri), $publishedAtUTC, $title, null);
+                $previewNewsDTOList[] = new PreviewNewsDTO($uri, $publishedAt, $title);
             });
         }
 
@@ -78,24 +66,26 @@ class GtrkKostroma extends AbstractBaseParser
         $newsPage = $this->getPageContent($uri);
 
         $newsPageCrawler = new Crawler($newsPage);
-        $newsPostCrawler = $newsPageCrawler->filterXPath('//div[@class="detail"]');
+        $contentCrawler = $newsPageCrawler->filter('.detail');
+        $description = $this->getDescriptionFromContentText($contentCrawler);
 
-        $mainImageCrawler = $newsPostCrawler->filterXPath('//img')->first();
+        $mainImageCrawler = $contentCrawler->filterXPath('//div[contains(@class,"media-block")]//img[1]');
         if ($this->crawlerHasNodes($mainImageCrawler)) {
             $image = $mainImageCrawler->attr('src');
-            $this->removeDomNodes($newsPostCrawler,'//img[1]');
+            $this->removeDomNodes($contentCrawler,'//div[contains(@class,"media-block")]');
         }
         if ($image !== null && $image !== '') {
-            $image = UriResolver::resolve($image, $uri);
-            $previewNewsDTO->setImage($this->encodeUri($image));
+            $image = UriResolver::resolve($image, $this->getSiteUrl());
+            $previewNewsDTO->setImage($image);
         }
 
-        $previewNewsDTO->setDescription(null);
+        if ($description && $description !== '') {
+            $previewNewsDTO->setDescription($description);
+        }
 
-        $contentCrawler = $newsPostCrawler->filterXPath('//div[contains(@class,"inner-content inner-content--min-height")]');
+        $contentCrawler = $contentCrawler->filter('.detail__text');
 
         $this->removeDomNodes($contentCrawler,'//div[contains(@class,"tag-list-simple")]');
-
         $this->purifyNewsPostContent($contentCrawler);
 
         $newsPostItemDTOList = $this->parseNewsPostContent($contentCrawler, $previewNewsDTO);
@@ -103,23 +93,48 @@ class GtrkKostroma extends AbstractBaseParser
         return $this->factoryNewsPost($previewNewsDTO, $newsPostItemDTOList);
     }
 
-    public function convertStringMonthToNumber($stringMonth): int
+    private function getDescriptionFromContentText(Crawler $crawler): ?string
     {
-        $stringMonth = mb_strtolower($stringMonth);
-        $monthsList = [
-            "января" => 1,
-            "февраля" => 2,
-            "марта" => 3,
-            "апреля" => 4,
-            "мая" => 5,
-            "июня" => 6,
-            "июля" => 7,
-            "августа" => 8,
-            "сентября" => 9,
-            "октября" => 10,
-            "ноября" => 11,
-            "декабря" => 12,
+        $descriptionCrawler = $crawler->filterXPath('//div[contains(@class,"description-block")]');
+
+        if ($this->crawlerHasNodes($descriptionCrawler)) {
+            $descriptionText = Text::trim($this->normalizeSpaces($descriptionCrawler->text()));
+
+            if ($descriptionText) {
+                $this->removeDomNodes($crawler, '//div[contains(@class,"description-block")]');
+                return $descriptionText;
+            }
+        }
+
+        return null;
+    }
+
+    private function getPublishedAt(Crawler $crawler): ?DateTimeImmutable
+    {
+        $months = [
+            1 => 'января',
+            2 => 'февраля',
+            3 => 'марта',
+            4 => 'апреля',
+            5 => 'мая',
+            6 => 'июня',
+            7 => 'июля',
+            8 => 'августа',
+            9 => 'сентября',
+            10 => 'октября',
+            11 => 'ноября',
+            12 => 'декабря',
         ];
-        return $monthsList[$stringMonth];
+
+        $publishedAt = mb_strtolower($crawler->filter('.news__date')->text());
+        $publishedAtString = str_replace($months, array_keys($months), $publishedAt);
+
+        $publishedAt = DateTimeImmutable::createFromFormat('d m Y, H:i', $publishedAtString, new DateTimeZone('Europe/Moscow'));
+        if (!$publishedAt) {
+            $publishedAt = new DateTimeImmutable();
+        }
+        $publishedAt = $publishedAt->setTimezone(new DateTimeZone('UTC'));
+
+        return $publishedAt;
     }
 }
