@@ -4,6 +4,7 @@ namespace app\components\helper\metallizzer;
 
 use app\components\parser\NewsPost;
 use app\components\parser\NewsPostItem;
+use Exception;
 use Symfony\Component\DomCrawler\Crawler;
 
 class Parser
@@ -33,6 +34,12 @@ class Parser
         'noindex',
     ];
     protected $joinText = true;
+    protected $newLine;
+
+    public function __construct()
+    {
+        $this->newLine = '#'.implode('#', [uniqid(), 'NEW', uniqid(), 'LINE', uniqid()]).'#';
+    }
 
     public static function flatten(array $blocks)
     {
@@ -155,6 +162,29 @@ class Parser
             });
         }
 
+        $node->filter('br')->each(function (Crawler $crawler) {
+            foreach ($crawler as $node) {
+                $doc = $node->ownerDocument;
+
+                if ($doc && $node->parentNode) {
+                    $node->parentNode->replaceChild($doc->createTextNode($this->newLine), $node);
+                }
+            }
+        });
+
+        $node->filter('p,ul li,ol li,div')->each(function (Crawler $crawler, $i) {
+            foreach ($crawler as $node) {
+                if ($doc = $node->ownerDocument) {
+                    if ($node->nodeName == 'li' && $node->parentNode && $node->hasChildNodes()) {
+                        $index = ($node->parentNode->nodeName == 'ul') ? '• ' : ++$i.'. ';
+                        $node->insertBefore($doc->createTextNode($index), $node->childNodes->item(0));
+                    }
+
+                    $node->appendChild($doc->createTextNode($this->newLine));
+                }
+            }
+        });
+
         $this->glued = array_map(function ($v) {
             return implode(',', $v);
         }, $this->selectors);
@@ -212,7 +242,9 @@ class Parser
                 $method = 'parse'.ucfirst($type);
                 $item   = $this->{$method}($node, $i);
 
-                $this->items = array_merge($this->items, [$item]);
+                if ($item) {
+                    $this->items = array_merge($this->items, [$item]);
+                }
 
                 return;
             }
@@ -239,8 +271,18 @@ class Parser
                 }
             } elseif ($node->nodeName() == '#text') {
                 $text = Text::normalizeWhitespace($node->text(null, false));
+                $item = $this->textNode($text);
 
-                $this->items = array_merge($this->items, [$this->textNode($text)]);
+                if ($item) {
+                    try {
+                        if ($node->parents()->closest($this->glued['quote'])) {
+                            $item['type'] = NewsPostItem::TYPE_QUOTE;
+                        }
+                    } catch (Exception $e) {
+                    }
+
+                    $this->items = array_merge($this->items, [$item]);
+                }
             }
         }
 
@@ -275,7 +317,13 @@ class Parser
 
     protected function filterItems(array $items)
     {
-        return array_filter($items, function ($item) {
+        return array_filter(array_map(function ($item) {
+            if (!empty($item['text'])) {
+                $item['text'] = str_replace($this->newLine, PHP_EOL, $item['text']);
+            }
+
+            return $item;
+        }, $items), function ($item) {
             if (empty($item)) {
                 return false;
             }
@@ -426,6 +474,10 @@ class Parser
 
         if (!preg_match('/^(?:(?:(?<proto>https?|ftp):)?\/)?\//i', $link->attr('href'))) {
             return $this->textNode($text ?: $link->attr('href'));
+        }
+
+        if ($url && $text === $url) {
+            $text = null;
         }
 
         return [
