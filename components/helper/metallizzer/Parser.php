@@ -318,7 +318,7 @@ class Parser
     {
         return array_filter(array_map(function ($item) {
             if (!empty($item['text'])) {
-                $item['text'] = str_replace($this->newLine, PHP_EOL, $item['text']);
+                $item['text'] = preg_replace('/[\pC]{1,}/u', PHP_EOL, str_replace($this->newLine, PHP_EOL, $item['text']));
             }
 
             return $item;
