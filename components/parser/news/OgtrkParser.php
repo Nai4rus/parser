@@ -265,9 +265,8 @@ class OgtrkParser implements ParserInterface
         }
 
         $link = UriResolver::resolve($node->getAttribute('href'), $previewNewsItem->getUri());
-        $link = Helper::encodeUrl($link);
-
-        if (!$link || $link === '' || !filter_var($link, FILTER_VALIDATE_URL)) {
+        $link = $this->encodeUri($link);
+        if ($link === null) {
             return null;
         }
 
@@ -329,7 +328,10 @@ class OgtrkParser implements ParserInterface
         }
 
         $imageLink = UriResolver::resolve($imageLink, $previewNewsItem->getUri());
-        $imageLink = Helper::encodeUrl($imageLink);
+        $imageLink = $this->encodeUri($imageLink);
+        if($imageLink === null){
+            return null;
+        }
 
         $alt = $node->getAttribute('alt');
         $alt = $alt !== '' ? $alt : null;
@@ -585,6 +587,21 @@ class OgtrkParser implements ParserInterface
         $date = str_replace($ruMonthShort, $enMonth, $date);
 
         return $date;
+    }
+
+    private function encodeUri(string $uri)
+    {
+        try {
+            $encodedUri = Helper::encodeUrl($uri);
+        } catch (Throwable $exception) {
+            return null;
+        }
+
+        if (!$encodedUri || $encodedUri === '' || !filter_var($encodedUri, FILTER_VALIDATE_URL)) {
+            return null;
+        }
+
+        return $encodedUri;
     }
 
     private function getYoutubeVideoId(string $link): ?string
