@@ -252,7 +252,7 @@ abstract class AbstractBaseParser implements ParserInterface
 
 
             if ($node->nodeName === 'br') {
-                $this->removeParentsFromStorage($node->parentNode);
+                $this->getNodeStorage()->removeAll($this->getNodeStorage());
                 return null;
             }
         } catch (RuntimeException $exception) {
@@ -286,8 +286,8 @@ abstract class AbstractBaseParser implements ParserInterface
 
         $newsPostItem = NewsPostItemDTO::createQuoteItem($this->normalizeText($node->textContent));
 
+        $this->getNodeStorage()->removeAll($this->getNodeStorage());
         $this->getNodeStorage()->attach($node, $newsPostItem);
-        $this->removeParentsFromStorage($node->parentNode);
 
         return $newsPostItem;
     }
@@ -319,8 +319,8 @@ abstract class AbstractBaseParser implements ParserInterface
 
         $newsPostItem = NewsPostItemDTO::createHeaderItem($this->normalizeText($node->textContent), $headingLevel);
 
+        $this->getNodeStorage()->removeAll($this->getNodeStorage());
         $this->getNodeStorage()->attach($node, $newsPostItem);
-        $this->removeParentsFromStorage($node->parentNode);
 
         return $newsPostItem;
     }
@@ -366,8 +366,8 @@ abstract class AbstractBaseParser implements ParserInterface
 
         $newsPostItem = NewsPostItemDTO::createLinkItem($link, $linkText);
 
+        $this->getNodeStorage()->removeAll($this->getNodeStorage());
         $this->getNodeStorage()->attach($node, $newsPostItem);
-        $this->removeParentsFromStorage($node->parentNode);
 
         return $newsPostItem;
     }
@@ -400,6 +400,8 @@ abstract class AbstractBaseParser implements ParserInterface
             return null;
         }
         $newsPostItem = NewsPostItemDTO::createVideoItem($youtubeVideoId);
+
+        $this->getNodeStorage()->removeAll($this->getNodeStorage());
         $this->getNodeStorage()->attach($node, $newsPostItem);
 
         return $newsPostItem;
@@ -443,6 +445,7 @@ abstract class AbstractBaseParser implements ParserInterface
         $newsPostItem = NewsPostItemDTO::createImageItem($imageLink, $alt);
 
         if ($isPicture) {
+            $this->getNodeStorage()->removeAll($this->getNodeStorage());
             $this->getNodeStorage()->attach($node->parentNode, $newsPostItem);
         }
 
@@ -493,40 +496,10 @@ abstract class AbstractBaseParser implements ParserInterface
 
         $newsPostItem = NewsPostItemDTO::createTextItem($this->normalizeText($node->textContent));
 
+        $this->getNodeStorage()->removeAll($this->getNodeStorage());
         $this->getNodeStorage()->attach($attachNode, $newsPostItem);
 
         return $newsPostItem;
-    }
-
-
-    protected function removeParentsFromStorage(
-        DOMNode $node,
-        int $maxLevel = 5,
-        array $exceptNewsPostItemTypes = null
-    ): void {
-        if ($maxLevel <= 0 || !$node->parentNode) {
-            return;
-        }
-
-        if ($exceptNewsPostItemTypes === null) {
-            $exceptNewsPostItemTypes = [NewsPostItem::TYPE_HEADER, NewsPostItem::TYPE_QUOTE, NewsPostItem::TYPE_LINK];
-        }
-
-        if ($this->getNodeStorage()->contains($node)) {
-            /** @var NewsPostItemDTO $newsPostItem */
-            $newsPostItem = $this->getNodeStorage()->offsetGet($node);
-
-            if (in_array($newsPostItem->getType(), $exceptNewsPostItemTypes, true)) {
-                return;
-            }
-
-            $this->getNodeStorage()->detach($node);
-            return;
-        }
-
-        $maxLevel--;
-
-        $this->removeParentsFromStorage($node->parentNode, $maxLevel);
     }
 
     protected function getRecursivelyParentNode(DOMNode $node, callable $callback, int $maxLevel = 5): ?DOMNode
