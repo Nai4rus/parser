@@ -2,6 +2,7 @@
 
 namespace app\components\parser\news;
 
+use app\components\helper\metallizzer\Text;
 use app\components\helper\nai4rus\AbstractBaseParser;
 use app\components\helper\nai4rus\PreviewNewsDTO;
 use app\components\parser\NewsPost;
@@ -17,14 +18,18 @@ class CiarfsParser extends AbstractBaseParser
     public const USER_ID = 2;
     public const FEED_ID = 2;
 
+    protected function getSiteUrl(): string
+    {
+        return 'https://ciarf.ru/';
+    }
+
     protected function getPreviewNewsDTOList(int $minNewsCount = 10, int $maxNewsCount = 100): array
     {
         $previewNewsDTOList = [];
-        $pageNumber = 2;
+        $pageNumber = 1;
 
         while (count($previewNewsDTOList) < $maxNewsCount) {
-            $urn = "/news/?page=2{$pageNumber}";
-            $uriPreviewPage = UriResolver::resolve($urn, $this->getSiteUrl());
+            $uriPreviewPage = UriResolver::resolve("/news/?page={$pageNumber}", $this->getSiteUrl());
             $pageNumber++;
 
             try {
@@ -37,27 +42,21 @@ class CiarfsParser extends AbstractBaseParser
                 break;
             }
 
-            $previewNewsXPath = '//div[@class="news-list"]//a[contains(@class,"news-list__item")]';
-            $previewNewsCrawler = $previewNewsCrawler->filterXPath($previewNewsXPath);
+            $previewNewsCrawler = $previewNewsCrawler->filter('.news-list__item');
 
             $previewNewsCrawler->each(
                 function (Crawler $newsPreview) use (&$previewNewsDTOList) {
-                    $title = $newsPreview->text();
+                    $title = $newsPreview->filter('.news-list__title')->text();
                     $uri = UriResolver::resolve($newsPreview->attr('href'), $this->getSiteUrl());
+                    $publishedAt = $this->getPublishedAt($newsPreview);
 
-                    $description = null;
-                    $previewNewsDTOList[] = new PreviewNewsDTO($this->encodeUri($uri), null, $title, $description);
+                    $previewNewsDTOList[] = new PreviewNewsDTO($uri, $publishedAt, $title);
                 }
             );
         }
 
         $previewNewsDTOList = array_slice($previewNewsDTOList, 0, $maxNewsCount);
         return $previewNewsDTOList;
-    }
-
-    protected function getSiteUrl(): string
-    {
-        return 'https://ciarf.ru/';
     }
 
     protected function parseNewsPage(PreviewNewsDTO $previewNewsDTO): NewsPost
@@ -68,26 +67,50 @@ class CiarfsParser extends AbstractBaseParser
         $newsPage = $this->getPageContent($uri);
 
         $newsPageCrawler = new Crawler($newsPage);
-        $newsPostCrawler = $newsPageCrawler->filterXPath('//div[contains(@class,"detail-news__wrapper")]');
+        $contentCrawler = $newsPageCrawler->filter('.detail-news__text');
 
-        $mainImageCrawler = $newsPageCrawler->filterXPath('//img')->first();
+        $mainImageCrawler = $newsPageCrawler->filterXPath('//div[contains(@class,"detail-news__image-box")]//img[1]');
         if ($this->crawlerHasNodes($mainImageCrawler)) {
             $image = $mainImageCrawler->attr('src');
-            $this->removeDomNodes($newsPostCrawler,'//img[1]');
+            $this->removeDomNodes($contentCrawler, '//div[contains(@class,"detail-news__image-box")]');
         }
         if ($image !== null && $image !== '') {
-            $image = UriResolver::resolve($image, $uri);
-            $previewNewsDTO->setImage($this->encodeUri($image));
+            $image = UriResolver::resolve($image, $this->getSiteUrl());
+            $previewNewsDTO->setImage($image);
         }
 
-        $previewNewsDTO->setDescription(null);
-
-        $contentCrawler = $newsPostCrawler->filterXPath('//div[@class="detail-news__text"]')->first();
-
         $this->purifyNewsPostContent($contentCrawler);
+        $this->removeDomNodes($contentCrawler, '//div[contains(@class,"detail-news__text__tags")]');
 
         $newsPostItemDTOList = $this->parseNewsPostContent($contentCrawler, $previewNewsDTO);
 
         return $this->factoryNewsPost($previewNewsDTO, $newsPostItemDTOList);
+    }
+
+    private function getPublishedAt(Crawler $crawler): ?DateTimeImmutable
+    {
+        $months = [
+            1 => 'янв',
+            2 => 'фев',
+            3 => 'мар',
+            4 => 'апр',
+            5 => 'май',
+            6 => 'июн',
+            7 => 'июл',
+            8 => 'авг',
+            9 => 'сен',
+            10 => 'окт',
+            11 => 'ноя',
+            12 => 'дек',
+        ];
+
+        $publishedAtCrawler = $crawler->filter('.news-list__date-box');
+        $this->removeDomNodes($publishedAtCrawler, '//*[contains(@class,"news-list__read-more")]');
+        $publishedAtString = Text::trim($this->normalizeSpaces($publishedAtCrawler->text()));
+
+        $publishedAtString = str_replace($months, array_keys($months), $publishedAtString);
+        $publishedAt = DateTimeImmutable::createFromFormat('H:i d m', $publishedAtString, new DateTimeZone('Europe/Ulyanovsk'));
+
+        return $publishedAt->setTimezone(new DateTimeZone('UTC'));
     }
 }
