@@ -21,7 +21,7 @@ class Text
             return '';
         }
 
-        return preg_replace('/[\pZ\pC]{1,}/u', ' ', self::trim($value));
+        return self::trim(preg_replace('/[\pZ\pC]{1,}/u', ' ', self::trim($value)));
     }
 
     public static function decode(string $string)
