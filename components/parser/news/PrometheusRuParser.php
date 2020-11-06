@@ -85,6 +85,7 @@ class PrometheusRuParser extends AbstractBaseParser
         }
 
         $this->removeDomNodes($contentCrawler, '//div[contains(@class,"telegram-subscribe")]');
+        $this->removeDomNodes($contentCrawler, '//*[contains(@class,"twitter-tweet")]');
 
         if ($description && $description !== '') {
             $previewNewsDTO->setDescription($description);
