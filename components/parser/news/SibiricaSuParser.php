@@ -83,28 +83,47 @@ class SibiricaSuParser extends AbstractBaseParser
         $newsPageCrawler = new Crawler($newsPage);
 
         $contentCrawler = $newsPageCrawler->filterXPath('//section[@itemprop="articleBody"]');
-        $this->removeDomNodes($contentCrawler, '//*[contains(@class,"pagination")]');
-
-        $image = null;
-
-        $mainImageCrawler = $contentCrawler->filterXPath('//img[1]');
-        if ($this->crawlerHasNodes($mainImageCrawler)) {
-            $image = $mainImageCrawler->attr('src');
-            $this->removeDomNodes($contentCrawler, '//img[1]');
+        if ($contentCrawler->filterXPath('//span[contains(text(),"Читать дальше…")]//ancestor::a')->count()) {
+            $hrefReedMore = $contentCrawler->filterXPath('//span[contains(text(),"Читать дальше…")]//ancestor::a')->attr('href');
+            $uri = UriResolver::resolve($hrefReedMore, $this->getSiteUrl());
         }
+        $newsPostItemDTOList = [];
+        while (isset($uri)) {
+            $newsPage = $this->getPageContent($uri);
 
-        if ($image !== null && $image !== '') {
-            $image = $this->encodeUri(UriResolver::resolve($image, $this->getSiteUrl()));
-            $previewNewsDTO->setImage($image);
+            $newsPageCrawler = new Crawler($newsPage);
+            $contentCrawler = $newsPageCrawler->filterXPath('//section[@itemprop="articleBody"]');
+
+            unset($uri);
+            if ($contentCrawler->filterXPath('//a[@title="Вперед"]')->count()) {
+                $uri = UriResolver::resolve($contentCrawler->filterXPath('//a[@title="Вперед"]')->attr('href'), $this->getSiteUrl());
+            }
+
+            $this->removeDomNodes($contentCrawler, '//*[contains(@class,"pagination")]');
+            $this->removeDomNodes($contentCrawler, '//div[contains(@class,"pagenavcounter")]');
+            $this->removeDomNodes($contentCrawler, '//ul[contains(@class,"relateditems")]');
+
+            $image = null;
+
+            $mainImageCrawler = $contentCrawler->filterXPath('//img[1]');
+            if ($this->crawlerHasNodes($mainImageCrawler)) {
+                $image = $mainImageCrawler->attr('src');
+                $this->removeDomNodes($contentCrawler, '//img[1]');
+            }
+
+            if ($image !== null && $image !== '') {
+                $image = $this->encodeUri(UriResolver::resolve($image, $this->getSiteUrl()));
+                $previewNewsDTO->setImage($image);
+            }
+
+            if ($description && $description !== '') {
+                $previewNewsDTO->setDescription($description);
+            }
+
+            $this->purifyNewsPostContent($contentCrawler);
+
+            $newsPostItemDTOList = array_merge($newsPostItemDTOList ?? [], $this->parseNewsPostContent($contentCrawler, $previewNewsDTO));
         }
-
-        if ($description && $description !== '') {
-            $previewNewsDTO->setDescription($description);
-        }
-
-        $this->purifyNewsPostContent($contentCrawler);
-
-        $newsPostItemDTOList = $this->parseNewsPostContent($contentCrawler, $previewNewsDTO);
 
         $newsPost = $this->factoryNewsPost($previewNewsDTO, $newsPostItemDTOList);
 
