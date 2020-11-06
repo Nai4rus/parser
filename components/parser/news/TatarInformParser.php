@@ -70,12 +70,17 @@ class TatarInformParser extends AbstractBaseParser
         $newsPostCrawler = $newsPageCrawler->filterXPath('//div[contains(@class,"app-wrapper")]');
 
         $image = null;
-        $mainImageCrawler = $newsPageCrawler->filterXPath('//meta[@property="og:image"]');
+        $mainImageCrawler = $newsPageCrawler->filterXPath('//div[contains(@class,"ct-tb-img-block")]/img');
         if ($this->crawlerHasNodes($mainImageCrawler)) {
-            $image = $mainImageCrawler->attr('content');
+            $image = $mainImageCrawler->attr('src');
         }
         if ($image !== null && $image !== '') {
             $previewNewsItem->setImage(UriResolver::resolve($image, $uri));
+        }
+
+        $descriptionCrawler = $newsPostCrawler->filterXPath('//div[contains(@class,"ct-tb-lid")]');
+        if ($this->crawlerHasNodes($descriptionCrawler) && $descriptionCrawler->text() !== '') {
+            $previewNewsItem->setDescription($descriptionCrawler->text());
         }
 
         $contentCrawler = $newsPostCrawler->filterXPath('//div[contains(@class,"content-block")]');
