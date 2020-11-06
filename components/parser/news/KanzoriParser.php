@@ -66,28 +66,29 @@ class KanzoriParser extends AbstractBaseParser
         $newsPage = $this->getPageContent($uri);
 
         $newsPageCrawler = new Crawler($newsPage);
-        $newsPostCrawler = $newsPageCrawler->filterXPath('//div[@class="post-content "]');
+        $newsPostCrawler = $newsPageCrawler->filterXPath('//div[contains(@class,"main-post-content")]');
 
-        $mainImageCrawler = $newsPostCrawler->filterXPath('//img')->first();
+        $mainImageCrawler = $newsPostCrawler->filterXPath('//div[contains(@class,"post-thumbnail")]/a')->first();
         if ($this->crawlerHasNodes($mainImageCrawler)) {
-            $image = $mainImageCrawler->attr('src');
-            $this->removeDomNodes($newsPostCrawler,'//img[1]');
+            $image = $mainImageCrawler->attr('href');
         }
         if ($image !== null && $image !== '') {
-            $image = UriResolver::resolve($image, $uri);
-            $previewNewsDTO->setImage(Helper::encodeUrl($image));
+            $previewNewsDTO->setImage(UriResolver::resolve($image, $uri));
         }
 
-        $previewNewsDTO->setDescription(null);
+        $descriptionCrawler = $newsPostCrawler->filterXPath('//div[contains(@class,"desc")]');
+        if ($this->crawlerHasNodes($descriptionCrawler) && $descriptionCrawler->text() !== '') {
+            $previewNewsDTO->setDescription($descriptionCrawler->text());
+        }
 
 
         $contentCrawler = $newsPostCrawler->filterXPath('//div[contains(@class,"post-detail")]');
 
         $this->removeDomNodes($contentCrawler,'//div[contains(@class,"mobile-slider")]');
+        $this->removeDomNodes($contentCrawler,'//div[contains(@class,"post-thumbnail")]');
         $this->removeDomNodes($contentCrawler,'//div[contains(@class,"addtoany_share_save_container")]//following-sibling::*');
         $this->removeDomNodes($contentCrawler,'//div[contains(@class,"addtoany_share_save_container")]');
-        $this->removeDomNodes($contentCrawler, '//script | //video');
-        $this->removeDomNodes($contentCrawler, '//table');
+
 
         $this->purifyNewsPostContent($contentCrawler);
 
