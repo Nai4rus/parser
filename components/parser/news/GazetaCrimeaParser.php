@@ -3,12 +3,12 @@
 namespace app\components\parser\news;
 
 use app\components\Helper;
+use app\components\helper\metallizzer\Text;
 use app\components\helper\nai4rus\AbstractBaseParser;
 use app\components\helper\nai4rus\PreviewNewsDTO;
 use app\components\parser\NewsPost;
 use DateTimeImmutable;
 use DateTimeZone;
-use DOMNode;
 use RuntimeException;
 use Symfony\Component\DomCrawler\Crawler;
 use Symfony\Component\DomCrawler\UriResolver;
@@ -58,20 +58,6 @@ class GazetaCrimeaParser extends AbstractBaseParser
         return $previewNewsDTOList;
     }
 
-    protected function isFormattingTag(DOMNode $node): bool
-    {
-        $formattingTags = [
-            'strong' => true,
-            'b' => true,
-            's' => true,
-            'i' => true,
-            'a' => true,
-            'em' => true
-        ];
-
-        return isset($formattingTags[$node->nodeName]);
-    }
-
     protected function parseNewsPage(PreviewNewsDTO $previewNewsDTO): NewsPost
     {
         $uri = $previewNewsDTO->getUri();
@@ -80,7 +66,7 @@ class GazetaCrimeaParser extends AbstractBaseParser
         $newsPage = $this->getPageContent($uri);
 
         $newsPageCrawler = new Crawler($newsPage);
-        $newsPostCrawler = $newsPageCrawler->filterXPath('//div[contains(@class,"left_content")]');
+        $newsPostCrawler = $newsPageCrawler->filterXPath('//div[contains(@class,"news_all_text")]');
 
         $mainImageCrawler = $newsPostCrawler->filterXPath('//img[1]')->first();
         if ($this->crawlerHasNodes($mainImageCrawler)) {
@@ -91,21 +77,34 @@ class GazetaCrimeaParser extends AbstractBaseParser
             $previewNewsDTO->setImage(Helper::encodeUrl($image));
         }
 
-        $description = null;
-        if($description && $description !== ''){
+        $contentCrawler = $newsPostCrawler->filter('.bukv');
+        $description = $this->getDescriptionFromContentText($contentCrawler);
+
+        if ($description && $description !== '') {
             $previewNewsDTO->setDescription($description);
         }
 
-        $contentCrawler = $newsPostCrawler->filterXPath('//div[contains(@class,"news_all_text")]//div[@class="bukv"]');
-
-        $this->removeDomNodes($contentCrawler, '//a[starts-with(@href, "javascript")]');
-        $this->removeDomNodes($contentCrawler, '//div[contains(@class,"yashare")]');
-        $this->removeDomNodes($contentCrawler, '//img[1]');
-
+        $this->removeDomNodes($contentCrawler, '//figcaption | //div[contains(@class,"yashare")]');
         $this->purifyNewsPostContent($contentCrawler);
 
         $newsPostItemDTOList = $this->parseNewsPostContent($contentCrawler, $previewNewsDTO);
 
         return $this->factoryNewsPost($previewNewsDTO, $newsPostItemDTOList);
+    }
+
+    private function getDescriptionFromContentText(Crawler $crawler): ?string
+    {
+        $descriptionCrawler = $crawler->filterXPath('//div[contains(@class,"vrez-news")][1]');
+
+        if ($this->crawlerHasNodes($descriptionCrawler)) {
+            $descriptionText = Text::trim($this->normalizeSpaces($descriptionCrawler->text()));
+
+            if ($descriptionText) {
+                $this->removeDomNodes($crawler, '//div[contains(@class,"vrez-news")][1]');
+                return $descriptionText;
+            }
+        }
+
+        return null;
     }
 }
