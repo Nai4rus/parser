@@ -19,6 +19,13 @@ class MosNewsParser extends AbstractBaseParser
     public const USER_ID = 2;
     public const FEED_ID = 2;
 
+    public static function run(): array
+    {
+        $parser = new static(500000, 5);
+
+        return $parser->parse(10, 10);
+    }
+
     public function getSiteUrl(): string
     {
         return 'https://mos.news/';
