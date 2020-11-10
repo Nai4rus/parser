@@ -62,8 +62,7 @@ class MosNewsParser extends AbstractBaseParser
                 function (Crawler $newsPreview) use (&$previewList, $uriPreviewPage) {
                     $titleCrawler = $newsPreview->filterXPath('//div[contains(@class, "news-name")]/a');
                     $uri = UriResolver::resolve($titleCrawler->attr('href'), $uriPreviewPage);
-                    $preview = $newsPreview->filterXPath('//div[contains(@class,"news-text")]')->text();
-                    $previewList[] = new PreviewNewsDTO($uri, null, $titleCrawler->text(), $preview);
+                    $previewList[] = new PreviewNewsDTO($uri, null, $titleCrawler->text());
                 }
             );
         }
