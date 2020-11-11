@@ -31,15 +31,10 @@ class ZvezdaGukovoRuParser extends AbstractBaseParser
         try {
             $previewNewsContent = $this->getPageContent($uriPreviewPage);
             preg_match_all('/<item>.*?<\/item>/ms', $previewNewsContent, $matches, PREG_SET_ORDER, 0);
-            $previewNewsCrawler = new Crawler($previewNewsContent);
         } catch (Throwable $exception) {
             throw new RuntimeException('Не удалось получить достаточное кол-во новостей', null, $exception);
         }
 
-        // $previewNewsCrawler = $previewNewsCrawler->filterXPath('//item');
-        // if ($previewNewsCrawler->count() < $minNewsCount) {
-        //     throw new RuntimeException('Не удалось получить достаточное кол-во новостей');
-        // }
 
         foreach ($matches as $item) {
             $itemText = $item[0];
@@ -50,11 +45,11 @@ class ZvezdaGukovoRuParser extends AbstractBaseParser
             $uri = $matches[1];
 
             preg_match('/<pubDate>(.*?)<\/pubDate>/s', $itemText, $matches);
-            $publishedAtString = $matches[1];
-            $publishedAt = DateTimeImmutable::createFromFormat('D, d M Y H:i:s O', $publishedAtString);
+            $timezone = new DateTimeZone('Europe/Moscow');
+            $publishedAtString = mb_substr($matches[1],0,-6);
+            $publishedAt = DateTimeImmutable::createFromFormat('D, d M Y H:i:s', $publishedAtString,$timezone);
             $publishedAtUTC = $publishedAt->setTimezone(new DateTimeZone('UTC'));
 
-            // preg_match('/<description>(.*?)<\/description>/s', $itemText, $matches);
             $preview = null;
 
             $previewList[] = new PreviewNewsDTO($uri, $publishedAtUTC, $title, $preview);
@@ -87,11 +82,6 @@ class ZvezdaGukovoRuParser extends AbstractBaseParser
             $previewNewsItem->setImage(UriResolver::resolve($image, $uri));
         }
 
-        // $descriptionCrawler = $newsPostCrawler->filterXPath('//p[1][child::strong]');
-        // if ($this->crawlerHasNodes($descriptionCrawler) && $descriptionCrawler->text() !== '') {
-        //     $previewNewsItem->setDescription($descriptionCrawler->text());
-        //     $this->removeDomNodes($newsPostCrawler, '//p[1][child::strong]');
-        // }
 
         $contentCrawler = $newsPostCrawler;
 
