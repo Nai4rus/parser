@@ -59,7 +59,9 @@ class RodStoronatarRuParser extends AbstractBaseParser
             $publishedAtString = $newsPreview->filterXPath('//pubdate')->text();
             $preview = null;
 
-            $publishedAt = DateTimeImmutable::createFromFormat('D, d M Y H:i:s O', $publishedAtString);
+            $publishedAtString = mb_substr($publishedAtString, 0, -6);
+            $timezone = new DateTimeZone('Europe/Moscow');
+            $publishedAt = DateTimeImmutable::createFromFormat('D, d M Y H:i:s', $publishedAtString, $timezone);
             $publishedAtUTC = $publishedAt->setTimezone(new DateTimeZone('UTC'));
 
             $previewList[] = new PreviewNewsDTO($uri, $publishedAtUTC, $title, $preview);
@@ -84,14 +86,14 @@ class RodStoronatarRuParser extends AbstractBaseParser
         $newsPostCrawler = $newsPageCrawler->filterXPath('//article');
 
         try {
-            $times = $newsPostCrawler->filterXPath('//time')->each(function(Crawler $node) {
+            $times = $newsPostCrawler->filterXPath('//time')->each(function (Crawler $node) {
                 return $node->text();
             });
             $publishedAtString = implode(' ', $times);
-            $publishedAt = DateTimeImmutable::createFromFormat('d.m.Y H:i', $publishedAtString, new DateTimeZone('UTC'));
-            $previewNewsItem->setPublishedAt($publishedAt);
+            $timezone = new DateTimeZone('Europe/Moscow');
+            $publishedAt = DateTimeImmutable::createFromFormat('d.m.Y H:i', $publishedAtString, $timezone);
+            $previewNewsItem->setPublishedAt($publishedAt->setTimezone(new DateTimeZone('UTC')));
         } catch (\Throwable $th) {
-            //throw $th;
         }
 
         $image = null;
@@ -109,10 +111,9 @@ class RodStoronatarRuParser extends AbstractBaseParser
             $this->removeDomNodes($newsPostCrawler, '//p[1][child::strong]');
         }
 
-        $contentCrawler = $newsPostCrawler->filterXPath('//div[contains(concat(" ",normalize-space(@class)," ")," ymnews-single-content ")]');
+        $contentCrawler = $newsPostCrawler->filterXPath('//div[contains(@class,"ymnews-single-content")]');
 
-        $this->removeDomNodes($contentCrawler, '//*[contains(translate(substring(text(), 0, 14), "ФОТО", "фото"), "фото")]
-        | //*[@class="wp-block-embed"]');
+        $this->removeDomNodes($contentCrawler, '//*[@class="wp-block-embed"]');
 
         $this->purifyNewsPostContent($contentCrawler);
 
