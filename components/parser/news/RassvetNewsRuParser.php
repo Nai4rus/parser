@@ -46,7 +46,9 @@ class RassvetNewsRuParser extends AbstractBaseParser
             $publishedAtString = $newsPreview->filterXPath('//pubDate')->text();
             $preview = null;
 
-            $publishedAt = DateTimeImmutable::createFromFormat('D, d M Y H:i:s O', $publishedAtString);
+            $timezone = new DateTimeZone('Europe/Moscow');
+            $publishedAtString = mb_substr($publishedAtString, 0, -6);
+            $publishedAt = DateTimeImmutable::createFromFormat('D, d M Y H:i:s', $publishedAtString, $timezone);
             $publishedAtUTC = $publishedAt->setTimezone(new DateTimeZone('UTC'));
 
             $previewList[] = new PreviewNewsDTO($uri, $publishedAtUTC, $title, $preview);
