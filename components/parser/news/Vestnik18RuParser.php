@@ -42,6 +42,10 @@ class Vestnik18RuParser extends AbstractBaseParser
 
         $previewNewsCrawler->each(function (Crawler $newsPreview) use (&$previewList, $url) {
             $title = $newsPreview->filterXPath('//title')->text();
+            if($title === null || trim($title) === ''){
+                return;
+            }
+
             $uri = $newsPreview->filterXPath('//link')->text();
             $publishedAtString = $newsPreview->filterXPath('//pubDate')->text();
             $preview = null;
